@@ -15,11 +15,16 @@ API_KEY  = "pmx_aVcVfXStTHiqRqHFsnokE7Cfu9Cv3REuikivcRF7dP8"
 BASE_URL = "https://www.predictionhunt.com/api/v2"
 HEADERS  = {"Accept": "application/json", "X-API-Key": API_KEY}
 
-# Queries para matching-markets (backup / enriquecimiento LATAM)
+# Queries para matching-markets
 LATAM_KEYWORDS = [
     "liga mx", "copa america", "world cup", "champions league",
     "la liga", "premier league", "nba", "nfl", "ufc", "baseball",
-    "mexico", "argentina", "brazil"
+    "mexico", "argentina", "brazil",
+    "stanley cup", "nhl", "bundesliga", "serie a", "mls",
+    "mlb", "heisman", "europa league", "fa cup",
+    "copa libertadores", "concacaf",
+    "nba champion", "nba finals", "super bowl",
+    "world cup group", "fifa group",
 ]
 
 # ─── FETCH EVENTS ─────────────────────────────────────────────────────────────
@@ -82,9 +87,20 @@ def parse_events(events):
             platforms = group.get("platforms", [])
             gid = group.get("group_id")
 
-            # Construir market_ids para prices/bulk
-            # Necesitamos los IDs reales — los jalamos de matching-markets
-            # Por ahora guardamos el group_id y las plataformas
+            # Extraer market IDs directamente si la API los incluye
+            market_id_polymarket = None
+            market_id_kalshi = None
+            url_polymarket = ""
+            for m in group.get("markets", []):
+                src = m.get("source", "")
+                mid = m.get("id", "")
+                url = m.get("source_url", "")
+                if src == "polymarket" and not market_id_polymarket:
+                    market_id_polymarket = f"polymarket:{mid}"
+                    url_polymarket = url
+                elif src == "kalshi" and not market_id_kalshi:
+                    market_id_kalshi = f"kalshi:{mid}"
+
             results.append({
                 "group_id":     gid,
                 "event_id":     event_id,
@@ -98,7 +114,9 @@ def parse_events(events):
                 "probabilidad": None,
                 "yes_bid":      None,
                 "yes_ask":      None,
-                "url_polymarket": "",
+                "market_id_polymarket": market_id_polymarket,
+                "market_id_kalshi":     market_id_kalshi,
+                "url_polymarket": url_polymarket,
                 "ingesta_ts":   datetime.now(timezone.utc).isoformat(),
             })
 
@@ -143,6 +161,39 @@ def enrich_with_matching(groups_list):
             time.sleep(1)
         except Exception as e:
             print(f"  [ERROR] matching '{q}': {e}")
+
+    # Segundo paso: buscar por event_name los grupos que siguen sin URL
+    sin_url = [g for g in groups_list if not g.get("market_id_polymarket") and not g.get("market_id_kalshi")]
+    if sin_url:
+        # Agrupar por event_name único para hacer una query por evento
+        event_names = list({g["event_name"] for g in sin_url if g.get("event_name") and g["event_name"] != "Sin nombre"})
+        print(f"  Buscando {len(event_names)} event_names sin market_id...")
+        for name in event_names[:30]:  # máx 30 queries extra
+            try:
+                resp = requests.get(
+                    f"{BASE_URL}/matching-markets",
+                    headers=HEADERS,
+                    params={"q": name},
+                    timeout=15,
+                )
+                events = resp.json().get("events", [])
+                for event in events:
+                    for group in event.get("groups", []):
+                        gid = group.get("group_id")
+                        if gid in idx:
+                            i = idx[gid]
+                            for m in group.get("markets", []):
+                                src = m.get("source", "")
+                                mid = m.get("id", "")
+                                url = m.get("source_url", "")
+                                if src == "polymarket" and not groups_list[i].get("market_id_polymarket"):
+                                    groups_list[i]["market_id_polymarket"] = f"polymarket:{mid}"
+                                    groups_list[i]["url_polymarket"] = url
+                                elif src == "kalshi" and not groups_list[i].get("market_id_kalshi"):
+                                    groups_list[i]["market_id_kalshi"] = f"kalshi:{mid}"
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"  [ERROR] event_name '{name}': {e}")
 
     return groups_list
 
