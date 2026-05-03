@@ -916,81 +916,75 @@ function matchCard(g, hoy) {
   </div>`;
 }
 
+function dateGroup(fecha) {
+  const now  = new Date();
+  const hoy  = now.toISOString().split('T')[0];
+  const d    = new Date(fecha + 'T12:00:00');
+  const diff = Math.round((d - new Date(hoy + 'T12:00:00')) / 86400000);
+  if (diff === 0)  return { key:'0-hoy',     label:'🔴 Hoy',           order:0 };
+  if (diff === 1)  return { key:'1-man',      label:'Mañana',           order:1 };
+  if (diff <= 7)   return { key:'2-semana',   label:'Esta semana',      order:2 };
+  if (diff <= 14)  return { key:'3-proxsem',  label:'Próxima semana',   order:3 };
+  const mes = d.toLocaleString('es-MX',{month:'long',year:'numeric'});
+  return { key:`4-${fecha.slice(0,7)}`, label: mes.charAt(0).toUpperCase()+mes.slice(1), order:4 };
+}
+
 function renderPartidos() {
   const ph     = (DATA.partidos||[]).filter(p=>p.equipos?.length>=2);
   const kalshi = (DATA.partidos_kalshi||[]).filter(p=>p.equipos?.length>=2);
-  const all    = [...ph,...kalshi];
 
-  const hoy = new Date().toISOString().split('T')[0];
-  const hoyCount = all.filter(p=>p.fecha===hoy).length;
-  document.getElementById('s1').textContent = all.length;
+  // Deduplicate by sport+fecha+teams to avoid PH/Kalshi overlap
+  const seen = new Set();
+  const all  = [...ph, ...kalshi].filter(p => {
+    const e = p.equipos||[];
+    const k = `${p.sport}|${p.fecha}|${e[0]?.nombre||''}|${e[e.length-1]?.nombre||''}`;
+    if (seen.has(k)) return false; seen.add(k); return true;
+  }).sort((a,b) => (a.fecha||'').localeCompare(b.fecha||''));
+
+  const hoy      = new Date().toISOString().split('T')[0];
+  const hoyCount = all.filter(p => p.fecha === hoy).length;
+  document.getElementById('s1').textContent      = all.length;
   document.getElementById('hoyCount').textContent = hoyCount;
 
-  const sports = [...new Set(all.map(p=>p.sport).filter(Boolean))];
-  sports.sort((a,b) => {
+  // League tabs
+  const sports = [...new Set(all.map(p=>p.sport).filter(Boolean))].sort((a,b)=>{
     const ai=SPORT_ORDER.indexOf(a), bi=SPORT_ORDER.indexOf(b);
     return (ai<0?99:ai)-(bi<0?99:bi);
   });
-
   const tabs = document.getElementById('leagueTabs');
-  tabs.innerHTML = `
-    <button class="tab ${activeLeague==='todos'?'active':''}" onclick="filterLeague('todos',this)">
-      🌎 Todos <span class="tab-cnt">${all.length}</span>
-    </button>`;
+  tabs.innerHTML = `<button class="tab ${activeLeague==='todos'?'active':''}" onclick="filterLeague('todos',this)">
+    🌎 Todos <span class="tab-cnt">${all.length}</span></button>`;
   sports.forEach(s => {
-    const c = lc(s);
-    const cnt = all.filter(p=>p.sport===s).length;
-    tabs.innerHTML += `
-      <button class="tab ${activeLeague===s?'active':''}" onclick="filterLeague('${s}',this)">
-        ${c.emoji} ${s} <span class="tab-cnt">${cnt}</span>
-      </button>`;
+    const c = lc(s), cnt = all.filter(p=>p.sport===s).length;
+    tabs.innerHTML += `<button class="tab ${activeLeague===s?'active':''}" onclick="filterLeague('${s}',this)">
+      ${c.emoji} ${s} <span class="tab-cnt">${cnt}</span></button>`;
   });
 
   const filtered = activeLeague==='todos' ? all : all.filter(p=>p.sport===activeLeague);
   let html = '';
 
-  if(activeLeague==='todos') {
-    const byLeague = {};
-    filtered.forEach(p => { const k=p.sport||'Otros'; if(!byLeague[k]) byLeague[k]=[]; byLeague[k].push(p); });
-    const leagues = Object.keys(byLeague).sort((a,b)=>{
-      const ai=SPORT_ORDER.indexOf(a), bi=SPORT_ORDER.indexOf(b);
-      return (ai<0?99:ai)-(bi<0?99:bi);
-    });
-    leagues.forEach(league => {
-      const c = lc(league);
-      const ms = byLeague[league].slice().sort((a,b)=>(a.fecha||'').localeCompare(b.fecha||''));
+  // Group by date bucket
+  const groups = {};
+  filtered.forEach(p => {
+    const g = dateGroup(p.fecha || '9999-12-31');
+    if (!groups[g.key]) groups[g.key] = { ...g, items:[] };
+    groups[g.key].items.push(p);
+  });
+
+  Object.values(groups)
+    .sort((a,b) => a.order - b.order || a.key.localeCompare(b.key))
+    .forEach(({ label, items }) => {
       html += `
         <div class="sec-hdr">
-          <div class="sec-dot" style="background:${c.color}"></div>
-          <div class="sec-title">${c.emoji} ${league}</div>
+          <div class="sec-dot" style="background:var(--gold)"></div>
+          <div class="sec-title">${label}</div>
           <div class="sec-line"></div>
-          <div class="sec-count">${ms.length} partidos</div>
+          <div class="sec-count">${items.length} partido${items.length!==1?'s':''}</div>
         </div>
         <div class="grid">`;
-      ms.forEach(m => { html += matchCard(m, hoy); });
+      items.forEach(m => { html += matchCard(m, hoy); });
       html += '</div>';
     });
-  } else {
-    const byDate = {};
-    filtered.forEach(p => {
-      const k=p.fecha||'—';
-      if(!byDate[k]) byDate[k]=[];
-      byDate[k].push(p);
-    });
-    Object.keys(byDate).sort().forEach(d => {
-      const c = lc(activeLeague);
-      html += `
-        <div class="sec-hdr">
-          <div class="sec-dot" style="background:${c.color}"></div>
-          <div class="sec-title">${fDate(d)}</div>
-          <div class="sec-line"></div>
-          <div class="sec-count">${byDate[d].length}</div>
-        </div>
-        <div class="grid">`;
-      byDate[d].forEach(m => { html += matchCard(m, hoy); });
-      html += '</div>';
-    });
-  }
 
   if(!html) html = `<div class="grid"><div class="empty-state">
     <div class="empty-ico">📭</div><h3>Sin partidos</h3><p>Intenta otra liga</p>
