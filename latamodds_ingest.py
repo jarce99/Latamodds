@@ -673,7 +673,7 @@ def run():
 
     print(f"\n{'='*60}")
     print(f"  [✓] latamodds_feed.json guardado")
-    print(f"      {len(groups)} mercados  |  {con_precio} con precio")
+    print(f"      {len(grupos)} mercados  |  {con_precio} con precio")
     print(f"{'='*60}\n")
 
     # Guardar en Supabase para histórico
