@@ -459,6 +459,55 @@ header {
   border-top:1px solid var(--border); gap:8px;
 }
 
+/* ══ GROUPED EVENT CARDS ══════════════════════════════════════ */
+.evt-card {
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:var(--r);
+  overflow:hidden;
+  transition:border-color 0.2s, box-shadow 0.2s;
+}
+.evt-card:hover { border-color:var(--border2); box-shadow:0 8px 32px rgba(0,0,0,0.3); }
+.evt-body { padding:4px 0; }
+.evt-row {
+  display:flex; align-items:center; gap:8px;
+  padding:7px 13px 7px 16px;
+  border-bottom:1px solid rgba(255,255,255,0.04);
+  transition:background 0.12s;
+}
+.evt-row:last-child { border-bottom:none; }
+.evt-row:hover { background:rgba(255,255,255,0.035); }
+.evt-rank { font-size:10px; font-weight:700; color:var(--text3); width:22px; flex-shrink:0; font-family:'Space Mono',monospace; }
+.evt-row-mid { flex:1; min-width:0; }
+.evt-row-label {
+  font-size:12px; font-weight:600; color:var(--text);
+  margin-bottom:5px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.evt-row-right { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+.evt-prob { font-size:13px; font-weight:700; font-family:'Space Mono',monospace; width:38px; text-align:right; }
+.evt-odds { font-size:11px; color:var(--text2); width:36px; font-family:'Space Mono',monospace; text-align:right; }
+.evt-link {
+  font-size:13px; color:var(--poly-l); text-decoration:none;
+  width:18px; text-align:center; opacity:0.65;
+  transition:opacity 0.15s; flex-shrink:0;
+}
+.evt-link:hover { opacity:1; }
+.evt-count {
+  font-size:11px; font-weight:600; color:var(--text2);
+  background:rgba(255,255,255,0.07); padding:3px 8px; border-radius:99px;
+}
+.evt-more-btn {
+  display:block; width:100%; padding:8px 16px;
+  background:none; border:none; border-top:1px solid var(--border);
+  color:var(--text2); font-size:11px; font-weight:600;
+  cursor:pointer; text-align:center; letter-spacing:0.3px;
+  font-family:inherit; transition:color 0.15s, background 0.15s;
+}
+.evt-more-btn:hover { color:var(--text); background:rgba(255,255,255,0.03); }
+.evt-card .league-pill { min-width:0; flex:1; overflow:hidden; }
+.evt-card .league-lbl { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
 /* ══ MODAL ════════════════════════════════════════════════════ */
 .modal-overlay {
   display:none; position:fixed; inset:0;
@@ -790,7 +839,8 @@ async function loadData() {
   let mi = 0;
   const cycler = setInterval(() => { msg.textContent = msgs[Math.min(++mi, msgs.length-1)]; }, 3000);
   try {
-    const r = await fetch('/feed.json');
+    let r = await fetch('/feed.json');
+    if (!r.ok) r = await fetch('https://raw.githubusercontent.com/jarce99/Latamodds/main/latamodds_feed.json');
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     DATA = await r.json();
     clearInterval(cycler);
@@ -1001,15 +1051,14 @@ function renderPartidos() {
 }
 
 /* ══ MERCADOS ═════════════════════════════════════════════════ */
-function gaugeCircumference(r) { return 2 * Math.PI * r; }
 
 function renderMercados() {
-  const eventos = (DATA.eventos_latam||[]).filter(e => {
+  const todos = (DATA.eventos_latam||[]).filter(e => {
     const p = e.probabilidad;
-    return p != null && p !== 50 && p > 1 && p < 99;
+    return p != null && p > 1 && p < 99;
   });
 
-  if(!eventos.length) {
+  if (!todos.length) {
     document.getElementById('panel-mercados').innerHTML = `
       <div class="grid"><div class="empty-state">
         <div class="empty-ico">📉</div><h3>Sin mercados</h3>
@@ -1018,81 +1067,93 @@ function renderMercados() {
     return;
   }
 
-  const R = 24, C = gaugeCircumference(R);
+  // Group by event_name
+  const map = new Map();
+  for (const e of todos) {
+    const key = e.event_name || '—';
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(e);
+  }
+
+  // Sort each group by prob desc; sort groups by top prob desc
+  const groups = [...map.entries()]
+    .map(([name, items]) => {
+      items.sort((a, b) => b.probabilidad - a.probabilidad);
+      return { name, items };
+    })
+    .sort((a, b) => b.items[0].probabilidad - a.items[0].probabilidad);
+
+  const SHOW = 5;
+
+  function renderRows(arr, startRank) {
+    return arr.map((e, i) => {
+      const rank = startRank + i;
+      const p = e.probabilidad;
+      const col = rank === 1 ? 'var(--green)' : rank === 2 ? 'var(--gold)' : 'var(--text2)';
+      const label = (e.titulo || '').replace(/^[¿¡]\s*/, '').slice(0, 52);
+      const link = e.url_polymarket
+        ? `<a href="${e.url_polymarket}" target="_blank" class="evt-link" onclick="event.stopPropagation()">↗</a>`
+        : '<span class="evt-link"></span>';
+      return `
+        <div class="evt-row">
+          <span class="evt-rank">#${rank}</span>
+          <div class="evt-row-mid">
+            <div class="evt-row-label">${label}</div>
+            <div class="mkt-bar-track"><div class="mkt-bar-fill" style="width:${p}%;background:${col}"></div></div>
+          </div>
+          <div class="evt-row-right">
+            <span class="evt-prob" style="color:${col}">${p}%</span>
+            <span class="evt-odds">${toOdds(p)}</span>
+            ${link}
+          </div>
+        </div>`;
+    }).join('');
+  }
 
   let html = '<div class="grid">';
-  eventos.slice(0,60).forEach(e => {
-    const p  = e.probabilidad;
-    const np = Math.round((100-p)*10)/10;
-    const conf = lc(e.event_name||'');
 
-    const filled = C * (p/100);
-    const empty  = C - filled;
-    const gaugeColor = p >= 60 ? 'var(--green)' : p >= 40 ? 'var(--gold)' : 'var(--red)';
-
-    const fuentes = (e.fuentes||[]);
-    const hasPoly = fuentes.includes('polymarket');
-    const accent  = hasPoly ? 'var(--poly-l)' : fuentes.includes('kalshi') ? 'var(--kalshi-l)' : 'var(--green)';
-
-    const sourcesTags = fuentes.map(f => srcTag(f)).join('');
-
-    const cta = e.url_polymarket
-      ? `<a href="${e.url_polymarket}" target="_blank" class="poly-link-btn" onclick="event.stopPropagation()">
-           <span style="font-size:12px">◈</span> Polymarket
-         </a>`
-      : '';
+  for (const { name, items } of groups) {
+    const conf = lc(name);
+    const hasPoly = items.some(e => (e.fuentes||[]).includes('polymarket'));
+    const accent = hasPoly ? 'var(--poly-l)' : 'var(--green)';
+    const dateStr = items[0].fecha_evento || '';
+    const extra = items.length - SHOW;
 
     html += `
-    <div class="mkt-card" onclick="${e.url_polymarket?`window.open('${e.url_polymarket}','_blank')`:''}">
+    <div class="evt-card">
       <div class="mkt-card-inner">
         <div class="mkt-accent" style="background:${accent}"></div>
         <div class="mkt-top">
           <div class="league-pill">
             <span class="league-abbr" style="background:${conf.bg};color:${conf.color}">${conf.abbr}</span>
-            <span class="league-lbl" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.event_name||'Sports'}</span>
+            <span class="league-lbl">${name}</span>
           </div>
-          <span class="date-lbl">${e.fecha_evento||'—'}</span>
-        </div>
-        <div class="mkt-body">
-          <div class="mkt-title">${e.titulo||'—'}</div>
-          <div class="mkt-prob-wrap">
-            <div class="mkt-gauge">
-              <svg width="58" height="58" viewBox="0 0 58 58">
-                <circle class="gauge-bg" cx="29" cy="29" r="${R}"/>
-                <circle class="gauge-fill" cx="29" cy="29" r="${R}"
-                  stroke="${gaugeColor}"
-                  stroke-dasharray="${filled} ${empty}"
-                  stroke-dashoffset="0"/>
-              </svg>
-              <div class="mkt-gauge-num" style="color:${gaugeColor}">${p}%</div>
-            </div>
-            <div class="mkt-sides">
-              <div class="mkt-bar-row">
-                <span class="mkt-bar-label" style="color:var(--green)">SÍ</span>
-                <div class="mkt-bar-track">
-                  <div class="mkt-bar-fill" style="width:${p}%;background:var(--green)"></div>
-                </div>
-                <span class="mkt-bar-val">${toOdds(p)}</span>
-              </div>
-              <div class="mkt-bar-row">
-                <span class="mkt-bar-label" style="color:var(--red)">NO</span>
-                <div class="mkt-bar-track">
-                  <div class="mkt-bar-fill" style="width:${np}%;background:var(--red)"></div>
-                </div>
-                <span class="mkt-bar-val">${toOdds(np)}</span>
-              </div>
-            </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            ${dateStr ? `<span class="date-lbl">${dateStr}</span>` : ''}
+            <span class="evt-count">${items.length} opc.</span>
           </div>
         </div>
-        <div class="mkt-ftr">
-          <div class="ftr-sources">${sourcesTags}</div>
-          ${cta}
+        <div class="evt-body">
+          ${renderRows(items.slice(0, SHOW), 1)}
+          ${extra > 0 ? `
+          <div class="evt-hidden-rows" style="display:none">
+            ${renderRows(items.slice(SHOW), SHOW + 1)}
+          </div>
+          <button class="evt-more-btn" onclick="toggleMore(this)">Ver ${extra} más ▾</button>` : ''}
         </div>
       </div>
     </div>`;
-  });
+  }
+
   html += '</div>';
   document.getElementById('panel-mercados').innerHTML = html;
+}
+
+function toggleMore(btn) {
+  const rows = btn.previousElementSibling;
+  const open = rows.style.display !== 'none';
+  rows.style.display = open ? 'none' : 'block';
+  btn.textContent = btn.textContent.replace(open ? '▴' : '▾', open ? '▾' : '▴');
 }
 
 /* ══ SEÑALES ══════════════════════════════════════════════════ */
