@@ -22,6 +22,9 @@ jobs:
 
       - name: Run ingestor
         run: python3 latamodds_ingest.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
       - name: Commit updated feed
         run: |

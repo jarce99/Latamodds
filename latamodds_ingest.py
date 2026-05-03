@@ -4,6 +4,7 @@ Fuentes: Prediction Hunt API v2 + Kalshi Trade API v2
 Pipeline: /v2/events → /v2/prices/bulk → feed completo
 """
 
+import os
 import re
 import requests
 import json
@@ -435,6 +436,55 @@ def fetch_partidos_semana():
 
     return partidos
 
+# ─── SUPABASE ─────────────────────────────────────────────────────────────────
+
+def save_to_supabase(eventos):
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        print("  [Supabase] No configurado, saltando.")
+        return
+
+    headers = {
+        "apikey":        key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type":  "application/json",
+        "Prefer":        "return=minimal",
+    }
+
+    rows = [{
+        "group_id":       e.get("group_id"),
+        "event_id":       str(e.get("event_id", "")),
+        "event_name":     e.get("event_name"),
+        "titulo":         e.get("titulo"),
+        "tipo":           e.get("tipo"),
+        "fecha_evento":   e.get("fecha_evento"),
+        "status":         e.get("status"),
+        "fuentes":        json.dumps(e.get("fuentes", [])),
+        "platform_count": e.get("platform_count"),
+        "probabilidad":   e.get("probabilidad"),
+        "url_polymarket": e.get("url_polymarket", ""),
+        "url_kalshi":     e.get("url_kalshi", ""),
+        "ingesta_ts":     e.get("ingesta_ts"),
+    } for e in eventos]
+
+    total = 0
+    for i in range(0, len(rows), 500):
+        batch = rows[i:i+500]
+        resp = requests.post(
+            f"{url}/rest/v1/odds_eventos",
+            headers=headers,
+            json=batch,
+            timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            total += len(batch)
+        else:
+            print(f"  [Supabase] Error {resp.status_code}: {resp.text[:200]}")
+
+    print(f"  [Supabase] {total} eventos guardados.")
+
+
 # ─── PIPELINE ─────────────────────────────────────────────────────────────────
 
 def run():
@@ -504,6 +554,10 @@ def run():
     print(f"  [✓] latamodds_feed.json guardado")
     print(f"      {len(groups)} mercados  |  {con_precio} con precio")
     print(f"{'='*60}\n")
+
+    # Guardar en Supabase para histórico
+    print("[Supabase] Guardando snapshot...")
+    save_to_supabase(groups)
 
 
 if __name__ == "__main__":
