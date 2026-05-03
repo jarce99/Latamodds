@@ -33,4 +33,5 @@ jobs:
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/jarce99/Latamodds.git
           git add latamodds_feed.json
           git diff --cached --quiet || git commit -m "chore: update feed [skip ci]"
+          git pull --rebase origin main
           git push
