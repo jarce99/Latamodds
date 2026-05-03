@@ -4,3 +4,7 @@ __pycache__/
 .vercel
 node_modules/
 *.log
+.DS_Store
+.claude/
+11.13.0
+latamodds_dashboard12.html
