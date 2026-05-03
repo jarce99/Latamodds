@@ -1053,9 +1053,13 @@ function renderPartidos() {
 /* ══ MERCADOS ═════════════════════════════════════════════════ */
 
 function renderMercados() {
+  // Solo Polymarket con precio real: excluir defaults (50%), near-settled (>92% o <8%)
   const todos = (DATA.eventos_latam||[]).filter(e => {
     const p = e.probabilidad;
-    return p != null && p > 1 && p < 99;
+    if (!e.url_polymarket) return false;         // solo Polymarket
+    if (p == null || p === 50) return false;     // sin precio real
+    if (p >= 92 || p <= 8) return false;         // mercado ya resuelto
+    return true;
   });
 
   if (!todos.length) {
@@ -1075,12 +1079,13 @@ function renderMercados() {
     map.get(key).push(e);
   }
 
-  // Sort each group by prob desc; sort groups by top prob desc
+  // Sort each group by prob desc; drop groups where top option >88% (ya resuelto)
   const groups = [...map.entries()]
     .map(([name, items]) => {
       items.sort((a, b) => b.probabilidad - a.probabilidad);
       return { name, items };
     })
+    .filter(g => g.items[0].probabilidad <= 88)
     .sort((a, b) => b.items[0].probabilidad - a.items[0].probabilidad);
 
   const SHOW = 5;

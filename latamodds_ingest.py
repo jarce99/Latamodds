@@ -249,13 +249,14 @@ def filter_and_sort(groups_list):
     hoy = date.today().isoformat()
 
     def es_valido(g):
-        # Descartar sin precio
         prob = g.get("probabilidad")
         if prob is None:
-            return True  # Mantener aunque no tenga precio
-        # Descartar resueltos
-        if prob >= 99 or prob <= 1:
+            return True  # Mantener aunque no tenga precio (se filtra en frontend)
+        # Descartar resueltos o sin dato real
+        if prob >= 95 or prob <= 5:
             return False
+        if prob == 50:
+            return False  # default / sin precio real
         # Descartar fechas pasadas
         fecha = g.get("fecha_evento", "")
         if fecha and fecha != "—" and fecha < hoy:
