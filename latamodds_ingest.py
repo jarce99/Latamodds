@@ -678,7 +678,7 @@ def run():
 
     # Guardar en Supabase para histórico
     print("[Supabase] Guardando snapshot...")
-    save_to_supabase(groups)
+    save_to_supabase(grupos)
 
 
 if __name__ == "__main__":
