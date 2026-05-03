@@ -488,104 +488,196 @@ def fetch_partidos_semana():
 
     return partidos
 
-# ─── POLYMARKET GAMMA API (fuente principal de mercados) ─────────────────────
+# ─── POLYMARKET GAMMA API — INGESTOR COMPLETO ────────────────────────────────
 
-GAMMA_URL = "https://gamma-api.polymarket.com"
+GAMMA_URL      = "https://gamma-api.polymarket.com"
+MIN_VOLUME_USD = 50_000   # filtro mínimo de volumen
 
-POLY_TAGS = [
-    ("soccer",        "sports"),
-    ("basketball",    "sports"),
-    ("baseball",      "sports"),
-    ("mma",           "sports"),
-    ("hockey",        "sports"),
-    ("tennis",        "sports"),
-    ("golf",          "sports"),
-    ("politics",      "politics"),
-    ("pop-culture",   "entertainment"),
-]
+# Tags relevantes para LATAM (matchea contra los slugs del evento)
+LATAM_TAG_SLUGS = {
+    "sports", "soccer", "basketball", "baseball", "mma", "football",
+    "hockey", "tennis", "golf", "cricket", "boxing", "rugby",
+    "politics", "elections", "economics", "world",
+    "pop-culture", "entertainment", "science",
+}
 
-def fetch_polymarket_eventos():
-    """Jala mercados directamente del Gamma API de Polymarket."""
-    all_items = []
-    seen_event_ids = set()
-    now = datetime.now(timezone.utc).isoformat()
+# Mapeo slug → categoría display
+def _tag_categoria(slugs):
+    for s in slugs:
+        if s in {"soccer","basketball","baseball","mma","football","hockey","tennis","golf","cricket","boxing","rugby","sports"}:
+            return "Sports"
+        if s in {"politics","elections"}:   return "Politics"
+        if s in {"economics"}:              return "Economics"
+        if s in {"world"}:                  return "World"
+        if s in {"pop-culture","entertainment"}: return "Entertainment"
+    return "Other"
 
-    print(f"\n[Polymarket] Jalando eventos del Gamma API ({len(POLY_TAGS)} categorías)...")
+def _parse_vol(v):
+    try:
+        return float(str(v).replace(",", "").replace("$", "")) if v else 0.0
+    except Exception:
+        return 0.0
 
-    for tag, tipo in POLY_TAGS:
+def _parse_price(raw):
+    try:
+        prices = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        return round(float(prices[0]) * 100, 1) if prices else None
+    except Exception:
+        return None
+
+
+def fetch_polymarket_complete():
+    """
+    Fetch completo del Gamma API con paginación keyset (offset).
+    Jala todos los eventos activos con volumen ≥ MIN_VOLUME_USD.
+    Retorna (polymarket_events, eventos_latam).
+      - polymarket_events : estructura rica por evento (para API / feed)
+      - eventos_latam     : lista plana por mercado  (para dashboard)
+    """
+    poly_events = []
+    flat_items  = []
+    seen_ids    = set()
+    stats       = {}
+    now_ts      = datetime.now(timezone.utc).isoformat()
+
+    print(f"\n[Polymarket] Fetch completo — vol ≥ ${MIN_VOLUME_USD:,} USD")
+
+    offset = 0
+    page   = 0
+    done   = False
+
+    while not done:
+        page += 1
         try:
             r = requests.get(
                 f"{GAMMA_URL}/events",
-                params={"active": "true", "closed": "false", "tag_slug": tag, "limit": 100},
-                timeout=15,
+                params={
+                    "active":    "true",
+                    "closed":    "false",
+                    "limit":     100,
+                    "order":     "volumeNum",
+                    "ascending": "false",
+                    "offset":    offset,
+                },
+                timeout=20,
             )
-            events = r.json() if r.ok else []
+            batch = r.json() if r.ok else []
         except Exception as e:
-            print(f"  [ERROR] {tag}: {e}")
-            continue
+            print(f"  [ERROR] página {page}: {e}")
+            break
 
-        new = 0
-        for event in events:
-            eid = event.get("id")
-            if eid in seen_event_ids:
+        if not batch:
+            break
+
+        page_valid = 0
+        for ev in batch:
+            eid = str(ev.get("id", ""))
+            if eid in seen_ids:
                 continue
-            seen_event_ids.add(eid)
 
-            title    = event.get("title", "")
-            slug     = event.get("slug", "")
-            end_date = (event.get("endDate") or "")[:10]
+            # Volumen — si cae por debajo del mínimo, paramos (están ordenados desc)
+            vol = _parse_vol(ev.get("volumeNum") or ev.get("volume"))
+            if vol < MIN_VOLUME_USD:
+                done = True
+                break
+            seen_ids.add(eid)
+
+            # Tags del evento
+            raw_tags   = ev.get("tags") or []
+            tag_labels = [t.get("label", "") for t in raw_tags]
+            tag_slugs  = {t.get("slug", "").lower() for t in raw_tags}
+
+            # Filtrar por relevancia LATAM
+            if not (tag_slugs & LATAM_TAG_SLUGS):
+                continue
+
+            cat = _tag_categoria(tag_slugs)
+            stats[cat] = stats.get(cat, 0) + 1
+
+            title     = ev.get("title", "")
+            slug      = ev.get("slug", "")
+            end_date  = (ev.get("endDate") or "")[:10]
             event_url = f"https://polymarket.com/event/{slug}" if slug else ""
 
-            for m in event.get("markets", []):
+            # ── Mercados del evento ──────────────────────────────────────────
+            markets_data = []
+            for m in ev.get("markets", []):
                 if m.get("closed") or not m.get("active", True):
                     continue
 
-                # Parsear precio YES (0-100)
-                try:
-                    raw = m.get("outcomePrices") or "[0.5,0.5]"
-                    prices = json.loads(raw) if isinstance(raw, str) else raw
-                    yes_pct = round(float(prices[0]) * 100, 1)
-                except Exception:
+                yes_pct = _parse_price(m.get("outcomePrices"))
+                if yes_pct is None:
                     continue
 
-                # Filtrar: sin dato real, resueltos o near-settled
-                if yes_pct == 50.0 or yes_pct >= 95 or yes_pct <= 5:
-                    continue
+                m_titulo = m.get("groupItemTitle") or m.get("question") or title
+                m_vol    = _parse_vol(m.get("volumeNum") or m.get("volume"))
+                cid      = m.get("conditionId", "")
 
-                titulo = m.get("groupItemTitle") or m.get("question") or title
-
-                try:
-                    vol = float(m.get("volume24hr") or m.get("volume") or 0)
-                except Exception:
-                    vol = 0.0
-
-                all_items.append({
-                    "group_id":            f"poly_{eid}_{m.get('id','')}",
-                    "event_id":            str(eid),
-                    "event_name":          title,
-                    "titulo":              titulo,
-                    "tipo":                tipo,
-                    "fecha_evento":        end_date,
-                    "status":              "active",
-                    "fuentes":             ["polymarket"],
-                    "platform_count":      1,
-                    "probabilidad":        yes_pct,
-                    "yes_bid":             yes_pct,
-                    "yes_ask":             yes_pct,
-                    "url_polymarket":      event_url,
-                    "market_id_polymarket": f"polymarket:{m.get('conditionId','')}",
-                    "volume_usd":          vol,
-                    "ingesta_ts":          now,
+                markets_data.append({
+                    "titulo":       m_titulo,
+                    "probabilidad": yes_pct,
+                    "volumen_usd":  m_vol,
+                    "conditionId":  cid,
                 })
-                new += 1
 
-        print(f"  {tag}: {new} mercados válidos de {len(events)} eventos")
-        time.sleep(0.3)
+                # Item plano para el dashboard (solo precios con incertidumbre real)
+                if 5 < yes_pct < 95 and yes_pct != 50.0:
+                    flat_items.append({
+                        "group_id":             f"poly_{eid}_{m.get('id','')}",
+                        "event_id":             eid,
+                        "event_name":           title,
+                        "titulo":               m_titulo,
+                        "tipo":                 cat.lower(),
+                        "fecha_evento":         end_date,
+                        "status":               "active",
+                        "fuentes":              ["polymarket"],
+                        "platform_count":       1,
+                        "probabilidad":         yes_pct,
+                        "yes_bid":              yes_pct,
+                        "yes_ask":              yes_pct,
+                        "url_polymarket":       event_url,
+                        "market_id_polymarket": f"polymarket:{cid}",
+                        "volume_usd":           m_vol,
+                        "ingesta_ts":           now_ts,
+                    })
 
-    # Ordenar: más volumen primero
-    all_items.sort(key=lambda x: x.get("volume_usd", 0), reverse=True)
-    print(f"  → {len(all_items)} mercados Polymarket totales")
-    return all_items
+            if not markets_data:
+                continue
+
+            tipo_evento  = "binary" if len(markets_data) == 1 else "multi"
+            prob_evento  = markets_data[0]["probabilidad"] if tipo_evento == "binary" else None
+
+            poly_events.append({
+                "id":               eid,
+                "titulo":           title,
+                "slug":             slug,
+                "url":              event_url,
+                "volumen_usd":      vol,
+                "fecha_resolucion": end_date,
+                "tags":             tag_labels,
+                "categoria":        cat,
+                "tipo":             tipo_evento,
+                "probabilidad":     prob_evento,
+                "mercados":         markets_data,
+                "ingesta_ts":       now_ts,
+            })
+            page_valid += 1
+
+        print(f"  Página {page:2d} (offset {offset:5d}): {page_valid:3d} eventos válidos")
+        if len(batch) < 100:
+            break
+        offset += 100
+        time.sleep(0.4)
+
+    # ── Resumen ──────────────────────────────────────────────────────────────
+    poly_events.sort(key=lambda x: x["volumen_usd"], reverse=True)
+    flat_items.sort(key=lambda x: x["volume_usd"],   reverse=True)
+
+    print(f"\n  Eventos por categoría:")
+    for cat, cnt in sorted(stats.items(), key=lambda x: -x[1]):
+        print(f"    {cat:<15} {cnt:4d} eventos")
+    print(f"\n  → {len(poly_events)} eventos  |  {len(flat_items)} mercados para dashboard")
+    return poly_events, flat_items
 
 
 # ─── SUPABASE ─────────────────────────────────────────────────────────────────
@@ -645,10 +737,10 @@ def run():
     print(f"  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     print("=" * 60)
 
-    # 1. Polymarket Gamma API — fuente principal de mercados
-    grupos = fetch_polymarket_eventos()
+    # 1. Polymarket Gamma API — fetch completo con paginación
+    poly_events, grupos = fetch_polymarket_complete()
     con_precio = len(grupos)
-    print(f"  → {con_precio} mercados con precio real")
+    print(f"  → {len(poly_events)} eventos | {con_precio} mercados para dashboard")
 
     # 2. Partidos de la semana (Prediction Hunt)
     print(f"\n[2/3] Jalando partidos de la semana...")
@@ -660,11 +752,12 @@ def run():
     partidos_kalshi = fetch_kalshi_partidos()
 
     output = {
-        "generado":        datetime.now(timezone.utc).isoformat(),
-        "total_eventos":   len(grupos),
-        "con_precio":      con_precio,
-        "eventos_latam":   grupos,
-        "mercados":        [],
+        "generado":          datetime.now(timezone.utc).isoformat(),
+        "total_eventos":     len(poly_events),
+        "con_precio":        con_precio,
+        "polymarket_events": poly_events,   # feed rico por evento
+        "eventos_latam":     grupos,        # feed plano para dashboard
+        "mercados":          [],
         "partidos":        partidos,
         "partidos_kalshi": partidos_kalshi,
     }
@@ -673,7 +766,7 @@ def run():
 
     print(f"\n{'='*60}")
     print(f"  [✓] latamodds_feed.json guardado")
-    print(f"      {len(grupos)} mercados  |  {con_precio} con precio")
+    print(f"      {len(poly_events)} eventos Polymarket  |  {con_precio} mercados dashboard")
     print(f"{'='*60}\n")
 
     # Guardar en Supabase para histórico
