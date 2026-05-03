@@ -283,7 +283,9 @@ header {
 }
 .league-lbl { font-size:11px; font-weight:600; color:var(--text2); }
 .card-meta { display:flex; align-items:center; gap:7px; }
-.date-lbl { font-size:11px; color:var(--text3); font-family:'Space Mono',monospace; }
+.date-lbl  { font-size:11px; color:var(--text3); font-family:'Space Mono',monospace; }
+.time-lbl  { font-size:11px; color:var(--gold);  font-family:'Space Mono',monospace;
+             background:rgba(255,199,55,0.1); border-radius:4px; padding:1px 5px; margin-left:4px; }
 .live-tag {
   display:flex; align-items:center; gap:4px;
   background:rgba(255,61,90,0.12); border:1px solid rgba(255,61,90,0.3);
@@ -761,6 +763,10 @@ function fDate(d) {
   const dt = new Date(d+'T12:00:00');
   return `${DIAS[dt.getDay()]} ${dt.getDate()}/${dt.getMonth()+1}`;
 }
+function fTime(horaUtc) {
+  if (!horaUtc) return null;
+  return new Date(horaUtc).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',hour12:true});
+}
 
 function srcTag(name) {
   const n = (name||'').toLowerCase();
@@ -872,6 +878,7 @@ function matchCard(g, hoy) {
         ${isHoy
           ? '<div class="live-tag"><div class="pulse"></div>HOY</div>'
           : `<span class="date-lbl">${fDate(g.fecha)}</span>`}
+        ${fTime(g.hora_utc) ? `<span class="time-lbl">${fTime(g.hora_utc)}</span>` : ''}
       </div>
     </div>
     <div class="mcard-body">
