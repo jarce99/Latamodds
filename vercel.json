@@ -1,0 +1,9 @@
+{
+  "functions": {
+    "api/feed.js": { "maxDuration": 60 }
+  },
+  "rewrites": [
+    { "source": "/feed.json", "destination": "/api/feed" },
+    { "source": "/",          "destination": "/latamodds_dashboard.html" }
+  ]
+}
