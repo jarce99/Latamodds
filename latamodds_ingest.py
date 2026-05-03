@@ -488,6 +488,106 @@ def fetch_partidos_semana():
 
     return partidos
 
+# ─── POLYMARKET GAMMA API (fuente principal de mercados) ─────────────────────
+
+GAMMA_URL = "https://gamma-api.polymarket.com"
+
+POLY_TAGS = [
+    ("soccer",        "sports"),
+    ("basketball",    "sports"),
+    ("baseball",      "sports"),
+    ("mma",           "sports"),
+    ("hockey",        "sports"),
+    ("tennis",        "sports"),
+    ("golf",          "sports"),
+    ("politics",      "politics"),
+    ("pop-culture",   "entertainment"),
+]
+
+def fetch_polymarket_eventos():
+    """Jala mercados directamente del Gamma API de Polymarket."""
+    all_items = []
+    seen_event_ids = set()
+    now = datetime.now(timezone.utc).isoformat()
+
+    print(f"\n[Polymarket] Jalando eventos del Gamma API ({len(POLY_TAGS)} categorías)...")
+
+    for tag, tipo in POLY_TAGS:
+        try:
+            r = requests.get(
+                f"{GAMMA_URL}/events",
+                params={"active": "true", "closed": "false", "tag_slug": tag, "limit": 100},
+                timeout=15,
+            )
+            events = r.json() if r.ok else []
+        except Exception as e:
+            print(f"  [ERROR] {tag}: {e}")
+            continue
+
+        new = 0
+        for event in events:
+            eid = event.get("id")
+            if eid in seen_event_ids:
+                continue
+            seen_event_ids.add(eid)
+
+            title    = event.get("title", "")
+            slug     = event.get("slug", "")
+            end_date = (event.get("endDate") or "")[:10]
+            event_url = f"https://polymarket.com/event/{slug}" if slug else ""
+
+            for m in event.get("markets", []):
+                if m.get("closed") or not m.get("active", True):
+                    continue
+
+                # Parsear precio YES (0-100)
+                try:
+                    raw = m.get("outcomePrices") or "[0.5,0.5]"
+                    prices = json.loads(raw) if isinstance(raw, str) else raw
+                    yes_pct = round(float(prices[0]) * 100, 1)
+                except Exception:
+                    continue
+
+                # Filtrar: sin dato real, resueltos o near-settled
+                if yes_pct == 50.0 or yes_pct >= 95 or yes_pct <= 5:
+                    continue
+
+                titulo = m.get("groupItemTitle") or m.get("question") or title
+
+                try:
+                    vol = float(m.get("volume24hr") or m.get("volume") or 0)
+                except Exception:
+                    vol = 0.0
+
+                all_items.append({
+                    "group_id":            f"poly_{eid}_{m.get('id','')}",
+                    "event_id":            str(eid),
+                    "event_name":          title,
+                    "titulo":              titulo,
+                    "tipo":                tipo,
+                    "fecha_evento":        end_date,
+                    "status":              "active",
+                    "fuentes":             ["polymarket"],
+                    "platform_count":      1,
+                    "probabilidad":        yes_pct,
+                    "yes_bid":             yes_pct,
+                    "yes_ask":             yes_pct,
+                    "url_polymarket":      event_url,
+                    "market_id_polymarket": f"polymarket:{m.get('conditionId','')}",
+                    "volume_usd":          vol,
+                    "ingesta_ts":          now,
+                })
+                new += 1
+
+        print(f"  {tag}: {new} mercados válidos de {len(events)} eventos")
+        time.sleep(0.3)
+
+    # Ordenar: más volumen primero
+    all_items.sort(key=lambda x: x.get("volume_usd", 0), reverse=True)
+    print(f"  → {len(all_items)} mercados Polymarket totales")
+    return all_items
+
+
 # ─── SUPABASE ─────────────────────────────────────────────────────────────────
 
 def save_to_supabase(eventos):
@@ -545,56 +645,25 @@ def run():
     print(f"  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     print("=" * 60)
 
-    # 1. Fetch todos los eventos deportivos activos
-    print(f"\n[1/4] Jalando eventos deportivos activos...")
-    raw_events = fetch_all_events(event_type="sports", limit_total=500)
-    print(f"  → {len(raw_events)} eventos")
+    # 1. Polymarket Gamma API — fuente principal de mercados
+    grupos = fetch_polymarket_eventos()
+    con_precio = len(grupos)
+    print(f"  → {con_precio} mercados con precio real")
 
-    groups = parse_events(raw_events)
-    print(f"  → {len(groups)} grupos/mercados")
-
-    # 2. Enriquecer con URLs y market IDs
-    groups = enrich_with_matching(groups)
-    con_url = sum(1 for g in groups if g.get("url_polymarket"))
-    print(f"  → {con_url} grupos con URL")
-
-    # 3. Precios
-    groups = fetch_prices(groups)
-
-    # 4. Filtrar y ordenar
-    print(f"\n[4/4] Filtrando y ordenando...")
-    groups = filter_and_sort(groups)
-    con_precio = sum(1 for g in groups if g.get("probabilidad") is not None)
-    print(f"  → {len(groups)} mercados válidos, {con_precio} con precio")
-
-    # ── Display top 25 ────────────────────────────────────────────────────────
-    print(f"\n{'─'*60}")
-    print(f"  TOP MERCADOS LATAM")
-    print(f"{'─'*60}")
-
-    for i, g in enumerate(groups[:25], 1):
-        prob_str = f"{g['probabilidad']}%" if g.get("probabilidad") else "N/D"
-        fuentes  = " + ".join(g["fuentes"]).upper()
-        print(f"\n#{i}  {g['titulo']}  —  {g['event_name']}")
-        print(f"     Prob: {prob_str}  |  Fecha: {g['fecha_evento']}")
-        print(f"     Fuentes: {fuentes}")
-        if g.get("url_polymarket"):
-            print(f"     → {g['url_polymarket']}")
-
-    # ── Guardar ───────────────────────────────────────────────────────────────
-    # Partidos Prediction Hunt
-    print(f"\n[+] Jalando partidos de la semana (Prediction Hunt)...")
+    # 2. Partidos de la semana (Prediction Hunt)
+    print(f"\n[2/3] Jalando partidos de la semana...")
     partidos = fetch_partidos_semana()
-    print(f"    → {len(partidos)} partidos encontrados")
+    print(f"  → {len(partidos)} partidos")
 
-    # Partidos Kalshi
+    # 3. Partidos Kalshi
+    print(f"\n[3/3] Jalando partidos Kalshi...")
     partidos_kalshi = fetch_kalshi_partidos()
 
     output = {
         "generado":        datetime.now(timezone.utc).isoformat(),
-        "total_eventos":   len(groups),
+        "total_eventos":   len(grupos),
         "con_precio":      con_precio,
-        "eventos_latam":   groups,
+        "eventos_latam":   grupos,
         "mercados":        [],
         "partidos":        partidos,
         "partidos_kalshi": partidos_kalshi,
